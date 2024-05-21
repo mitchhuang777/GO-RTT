@@ -1,129 +1,163 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel, QScrollArea, QRadioButton, QButtonGroup
-from PyQt5.QtCore import QTimer, Qt
-from pygetwindow import getWindowsWithTitle
+import time
 import mss
-import io
-from PyQt5.QtGui import QPixmap, QImage
 import win32gui
 import win32con
-import time
+import io
+from PIL import Image, ImageTk
+from tkinter import Tk, Frame, Label, Button, Scrollbar, Canvas, IntVar, VERTICAL, RIGHT, Y, LEFT, BOTH, X, TOP, BOTTOM, messagebox
 
-class ListAppTitlesApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("List App Titles App")
-        self.setGeometry(100, 100, 600, 400)
+class ScrollableFrame(Frame):
+    def __init__(self, parent, *args, **kwargs):
+        Frame.__init__(self, parent, *args, **kwargs)
+
+        self.canvas = Canvas(self)
+        self.scrollbar = Scrollbar(self, orient=VERTICAL, command=self.canvas.yview)
+        self.scrollable_frame = Frame(self.canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        self.scrollbar.pack(side=RIGHT, fill=Y)
+
+        # 绑定鼠标滚轮事件
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+class ListAppTitlesApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("List App Titles App")
+        self.root.geometry("800x600")
         
         self.initUI()
         
-        # 保持对预览窗口的引用
-        self.preview_windows = []
-        
     def initUI(self):
-        layout = QVBoxLayout()
+        self.buttonFrame = Frame(self.root)
+        self.buttonFrame.pack(side=TOP, fill=X)
         
-        self.listButton = QPushButton("List Open Windows")
-        self.listButton.clicked.connect(self.list_open_windows)
-        layout.addWidget(self.listButton)
+        self.listButton = Button(self.buttonFrame, text="List and Preview Open Windows", command=self.list_and_preview_windows)
+        self.listButton.pack(side=LEFT, padx=10, pady=10)
         
-        self.selectButton = QPushButton("Select")
-        self.selectButton.clicked.connect(self.select_window)
-        layout.addWidget(self.selectButton)
+        self.confirmButton = Button(self.buttonFrame, text="Confirm Selection", command=self.confirm_selection)
+        self.confirmButton.pack(side=LEFT, padx=10, pady=10)
         
-        self.scrollArea = QScrollArea()
-        self.scrollWidget = QWidget()
-        self.scrollLayout = QVBoxLayout()
-        self.scrollWidget.setLayout(self.scrollLayout)
-        self.scrollArea.setWidget(self.scrollWidget)
-        self.scrollArea.setWidgetResizable(True)
-        layout.addWidget(self.scrollArea)
+        self.scrollable_frame = ScrollableFrame(self.root)
+        self.scrollable_frame.pack(fill=BOTH, expand=True)
         
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.selected_hwnd = None
+        self.highlighted_label = None
         
-        self.buttonGroup = QButtonGroup()
+    def list_and_preview_windows(self):
+        for widget in self.scrollable_frame.scrollable_frame.winfo_children():
+            widget.destroy()
         
-    def list_open_windows(self):
-        windows = getWindowsWithTitle('')
-        self.clear_scroll_layout()
+        windows = self.get_open_windows()
         
-        for window in windows:
-            title = window.title
-            if title:  # 只显示有标题的窗口
-                radioButton = QRadioButton(title)
-                self.buttonGroup.addButton(radioButton)
-                self.scrollLayout.addWidget(radioButton)
+        row = 0
+        col = 0
+        
+        for hwnd, title in windows:
+            screenshot = self.capture_window(hwnd)
+            if screenshot:
+                if len(title) > 15:
+                    display_title = title[:15] + "..."
+                else:
+                    display_title = title
+                
+                titleLabel = Label(self.scrollable_frame.scrollable_frame, text=display_title)
+                titleLabel.grid(row=row, column=col, padx=5, pady=5)
+                
+                img = ImageTk.PhotoImage(screenshot)
+                labelImage = Label(self.scrollable_frame.scrollable_frame, image=img)
+                labelImage.image = img
+                labelImage.grid(row=row+1, column=col, padx=5, pady=5)
+                labelImage.bind("<Button-1>", lambda e, hwnd=hwnd, label=labelImage: self.on_thumbnail_click(hwnd, label))
+                
+                col += 1
+                if col >= 3:  # 每行最多三列
+                    col = 0
+                    row += 2  # 每两行换行
     
-    def select_window(self):
-        selected_button = self.buttonGroup.checkedButton()
-        if selected_button:
-            selected_title = selected_button.text()
-            windows = getWindowsWithTitle(selected_title)
-            if windows:
-                window = windows[0]
-                hwnd = window._hWnd
-                
-                # 如果窗口被最小化，则恢复窗口
-                if win32gui.IsIconic(hwnd):
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                
-                # 将窗口置于顶层
-                win32gui.SetForegroundWindow(hwnd)
-                
-                # 确保窗口完全恢复并显示
-                time.sleep(0.5)
-                
-                # 再次检查窗口是否在最前面
-                if hwnd != win32gui.GetForegroundWindow():
-                    return
-                
-                # 获取窗口的截图边界
-                bbox = (window.left, window.top, window.right, window.bottom)
-                
-                # 使用 mss 截取窗口画面
-                with mss.mss() as sct:
-                    monitor = {
-                        "top": bbox[1],
-                        "left": bbox[0],
-                        "width": bbox[2] - bbox[0],
-                        "height": bbox[3] - bbox[1],
-                    }
-                    sct_img = sct.grab(monitor)
-                    
-                    img_bytes = mss.tools.to_png(sct_img.rgb, sct_img.size)
-                    qimage = QImage.fromData(img_bytes)
-                    pixmap = QPixmap.fromImage(qimage)
-                
-                # 缩放截图以适应 600x600 的预览框
-                pixmap = pixmap.scaled(600, 600, Qt.KeepAspectRatio)
-                
-                preview_window = QMainWindow()
-                preview_window.setWindowTitle(f"Preview - {selected_title}")
-                preview_window.setGeometry(100, 100, 600, 600)
-                
-                label = QLabel()
-                label.setPixmap(pixmap)
-                preview_window.setCentralWidget(label)
-                preview_window.show()
-                
-                self.preview_windows.append(preview_window)
-                
-                # 使用 QTimer 在预览窗口显示后将其置顶
-                QTimer.singleShot(0, preview_window.raise_)
-
-    def clear_scroll_layout(self):
-        for i in reversed(range(self.scrollLayout.count())):
-            widget = self.scrollLayout.itemAt(i).widget()
-            if widget is not None:
-                widget.deleteLater()
+    def get_open_windows(self):
+        def callback(hwnd, windows):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+                class_name = win32gui.GetClassName(hwnd)
+                if class_name not in ['Progman', 'WorkerW']:
+                    windows.append((hwnd, win32gui.GetWindowText(hwnd)))
+        windows = []
+        win32gui.EnumWindows(callback, windows)
+        return windows
+    
+    def capture_window(self, hwnd):
+        # 如果窗口被最小化，则恢复窗口
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        
+        # 将窗口置于顶层
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"Error bringing window {hwnd} to foreground: {e}")
+            return None
+        
+        # 确保窗口完全恢复并显示
+        time.sleep(0.1)
+        
+        # 获取窗口的截图边界
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        
+        # 如果宽度或高度为零，则跳过
+        if right - left == 0 or bottom - top == 0:
+            return None
+        
+        # 使用 mss 截取窗口画面
+        with mss.mss() as sct:
+            monitor = {
+                "top": top,
+                "left": left,
+                "width": right - left,
+                "height": bottom - top,
+            }
+            sct_img = sct.grab(monitor)
+            img = Image.frombytes('RGB', (sct_img.width, sct_img.height), sct_img.rgb)
+            img = img.resize((200, 200), Image.LANCZOS)
+            return img
+    
+    def on_thumbnail_click(self, hwnd, label):
+        # 移除之前的高亮效果
+        if self.highlighted_label:
+            self.highlighted_label.config(borderwidth=0, relief="flat")
+        
+        # 设置当前的高亮效果
+        label.config(borderwidth=2, relief="solid")
+        self.highlighted_label = label
+        self.selected_hwnd = hwnd
+    
+    def confirm_selection(self):
+        if self.selected_hwnd:
+            try:
+                win32gui.SetForegroundWindow(self.selected_hwnd)
+                messagebox.showinfo("Selection Confirmed", f"Window with HWND {self.selected_hwnd} is now active.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to bring window to foreground: {e}")
+        else:
+            messagebox.showwarning("No Selection", "No window has been selected.")
 
 def main():
-    app = QApplication(sys.argv)
-    window = ListAppTitlesApp()
-    window.show()
-    sys.exit(app.exec_())
+    root = Tk()
+    app = ListAppTitlesApp(root)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 from tkinter import Tk
-from monitor_screen import MonitorScreenApp
+from monitor_screen.monitor_screen_app import MonitorScreenApp
 
 def main():
     root = Tk()

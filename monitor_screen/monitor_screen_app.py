@@ -6,6 +6,9 @@ import win32con
 import io
 from PIL import Image, ImageTk
 from tkinter import Tk, Frame, Label, Button, Scrollbar, Canvas, IntVar, VERTICAL, RIGHT, Y, LEFT, BOTH, X, TOP, BOTTOM, messagebox
+from PyQt5 import QtWidgets
+import threading
+from monitor_screen.real_time_ocr import RealTimeOCR, OverlayWindow
 
 class ScrollableFrame(Frame):
     def __init__(self, parent, *args, **kwargs):
@@ -52,11 +55,15 @@ class MonitorScreenApp:
         self.confirmButton = Button(self.buttonFrame, text="Confirm Selection", command=self.confirm_selection)
         self.confirmButton.pack(side=LEFT, padx=10, pady=10)
 
+        self.ocrButton = Button(self.buttonFrame, text="Start OCR", command=self.start_ocr)
+        self.ocrButton.pack(side=LEFT, padx=10, pady=10)
+
         self.scrollable_frame = ScrollableFrame(self.root)
         self.scrollable_frame.pack(fill=BOTH, expand=True)
 
         self.selected_hwnd = None
         self.highlighted_label = None
+        self.ocr_thread = None
 
     def list_and_preview_windows(self):
         for widget in self.scrollable_frame.scrollable_frame.winfo_children():
@@ -87,7 +94,7 @@ class MonitorScreenApp:
                 col += 1
                 if col >= 3:  # 每行最多三列
                     col = 0
-                    row += 3  # 每三行換行
+                    row += 3  # 每三行换行
 
     def get_open_windows(self):
         def callback(hwnd, windows):
@@ -100,28 +107,28 @@ class MonitorScreenApp:
         return windows
 
     def capture_window(self, hwnd):
-        # 如果窗口被最小化，則恢復窗口
+        # 如果窗口被最小化，则恢复窗口
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
 
-        # 將窗口置於頂層
+        # 将窗口置于顶层
         try:
             win32gui.SetForegroundWindow(hwnd)
         except Exception as e:
             print(f"Error bringing window {hwnd} to foreground: {e}")
             return None
 
-        # 確保窗口完全恢復並顯示
+        # 确保窗口完全恢复并显示
         time.sleep(0.1)
 
-        # 獲取窗口的截圖邊界
+        # 获取窗口的截图边界
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
 
-        # 如果寬度或高度為零，則跳過
+        # 如果宽度或高度为零，则跳过
         if right - left == 0 or bottom - top == 0:
             return None
 
-        # 使用 mss 截取窗口畫面
+        # 使用 mss 截取窗口画面
         with mss.mss() as sct:
             monitor = {
                 "top": top,
@@ -139,7 +146,7 @@ class MonitorScreenApp:
         if self.highlighted_label:
             self.highlighted_label.config(borderwidth=0, relief="flat")
 
-        # 設置當前的高亮效果
+        # 设置当前的高亮效果
         label.config(borderwidth=2, relief="solid")
         self.highlighted_label = label
         self.selected_hwnd = hwnd
@@ -147,13 +154,29 @@ class MonitorScreenApp:
     def confirm_selection(self):
         if self.selected_hwnd:
             try:
-                # 將窗口置於頂層並顯示
+                # 将窗口置于顶层并显示
                 if win32gui.IsIconic(self.selected_hwnd):
                     win32gui.ShowWindow(self.selected_hwnd, win32con.SW_RESTORE)
                 win32gui.SetForegroundWindow(self.selected_hwnd)
                 messagebox.showinfo("Selection Confirmed", f"Window with HWND {self.selected_hwnd} is now active.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to bring window to foreground: {e}")
+        else:
+            messagebox.showwarning("No Selection", "No window has been selected.")
+
+    def start_ocr(self):
+        if self.selected_hwnd:
+            app = QtWidgets.QApplication(sys.argv)
+            overlay_window = OverlayWindow(self.selected_hwnd)
+            overlay_window.show()
+
+            self.ocr = RealTimeOCR(self.selected_hwnd)
+            self.ocr.update_signal.connect(overlay_window.update_boxes)
+            self.ocr_thread = threading.Thread(target=self.ocr.start)
+            self.ocr_thread.daemon = True
+            self.ocr_thread.start()
+
+            app.exec_()
         else:
             messagebox.showwarning("No Selection", "No window has been selected.")
 
